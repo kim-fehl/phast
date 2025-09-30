@@ -53,6 +53,7 @@ jobs:
             fi
           fi
           git worktree add ../baseline "$BASE_REF"
+          echo "BASELINE_DIR=$(realpath ../baseline)" >>"$GITHUB_ENV"
 
       - name: Build current revision
         run: |
@@ -61,15 +62,17 @@ jobs:
 
       - name: Build baseline revision
         run: |
-          cd ../baseline/src
+          cd "$BASELINE_DIR/src"
           make CLAPACKPATH="$CLAPACK_DIR"
 
       - name: Run regression harness
         run: |
           cd test
-          export PATH="../bin:../baseline/bin:$PATH"
+          current_bin="$(realpath ../bin)"
+          baseline_bin="$BASELINE_DIR/bin"
+          export PATH="$current_bin:$baseline_bin:$PATH"
           set -o pipefail
-          perl testPhast.pl --no-quit --script test_phast.sh ../bin ../baseline/bin | tee harness.log
+          perl testPhast.pl --no-quit --script test_phast.sh "$current_bin" "$baseline_bin" | tee harness.log
           status=${PIPESTATUS[0]}
           if grep -Eiq 'failed [1-9][0-9]* tests' harness.log; then
             status=1
