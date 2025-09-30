@@ -55,10 +55,14 @@ jobs:
           git worktree add ../baseline "$BASE_REF"
 
       - name: Build current revision
-        run: make -C src CLAPACKPATH="$CLAPACK_DIR"
+        run: |
+          cd src
+          make CLAPACKPATH="$CLAPACK_DIR"
 
       - name: Build baseline revision
-        run: make -C ../baseline/src CLAPACKPATH="$CLAPACK_DIR"
+        run: |
+          cd ../baseline/src
+          make CLAPACKPATH="$CLAPACK_DIR"
 
       - name: Run regression harness
         run: |
