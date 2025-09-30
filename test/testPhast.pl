@@ -246,25 +246,61 @@ sub compare_files {
     }
     return if ($done);
 
-    my $diffout = `diff -b --brief $file1 $file2`;
-    print "\tchecking $fileRoot...";
-    if ($diffout) {
-	if ($file1 =~ /.mod$/ && $file2 =~ /.mod$/) {
-	    $fracdiff = compare_mods($file1, $file2);
-	    my $errorStr="WARNING";
-	    if ($fracdiff > $tolerance) {
-		$errorFlag=1;
-		$errorStr="ERROR";
-	    }
-	    print "$errorStr: $file1 and $file2 differ by " . sprintf("%.2e", $fracdiff*100.0) . "%\n";
-	} else {
-	    print "ERROR: $file1 and $file2 differ\n";
-	    $errorFlag=1;
-	}
-    } else {
-	print "\tgood.\n";
-	system("rm -f $file1 $file2");
+    my $diffLabel = $fileRoot;
+    $diffLabel =~ s/[^A-Za-z0-9_.-]+/_/g;
+    my $diffFile = "$tempPrefix.$diffLabel.diff";
+
+    my $diffout = "";
+    my $diffStatus;
+    {
+        my $pid = open(my $diff_fh, "-|", "diff", "-u", "-b", $file1, $file2);
+        if (!defined $pid) {
+            print "ERROR: unable to execute diff on $file1 and $file2\n";
+            $errorFlag = 1;
+            return;
+        }
+        while (<$diff_fh>) {
+            $diffout .= $_;
+        }
+        close($diff_fh);
+        $diffStatus = $? >> 8;
     }
+
+    print "\tchecking $fileRoot...";
+    if ($diffStatus == 0) {
+        print "\tgood.\n";
+        unlink $diffFile if (-e $diffFile);
+        system("rm -f $file1 $file2");
+        return;
+    }
+
+    if ($diffStatus == 2) {
+        print "ERROR: diff failed while comparing $file1 and $file2\n";
+        $errorFlag = 1;
+        return;
+    }
+
+    if ($diffout ne "") {
+        if (open(my $outDiff, '>', $diffFile)) {
+            print $outDiff $diffout;
+            close($outDiff);
+        }
+    }
+
+    if ($file1 =~ /.mod$/ && $file2 =~ /.mod$/) {
+        $fracdiff = compare_mods($file1, $file2);
+        my $errorStr="WARNING";
+        if ($fracdiff > $tolerance) {
+            $errorFlag=1;
+            $errorStr="ERROR";
+        }
+        print "$errorStr: $file1 and $file2 differ by " . sprintf("%.2e", $fracdiff*100.0) . "% (see $diffFile)\n"; 
+    } else {
+        print "ERROR: $file1 and $file2 differ (see $diffFile)\n";
+        $errorFlag=1;
+    }
+
+    print $diffout if ($diffout ne "");
 }
 
 
