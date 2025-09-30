@@ -67,7 +67,14 @@ jobs:
       - name: Run regression harness
         run: |
           cd test
-          perl testPhast.pl --no-quit --script test_phast.sh ../bin ../baseline/bin
+          export PATH="../bin:../baseline/bin:$PATH"
+          set -o pipefail
+          perl testPhast.pl --no-quit --script test_phast.sh ../bin ../baseline/bin | tee harness.log
+          status=${PIPESTATUS[0]}
+          if grep -Eiq 'failed [1-9][0-9]* tests' harness.log; then
+            status=1
+          fi
+          exit $status
 
       - name: Upload harness artefacts
         if: failure()
