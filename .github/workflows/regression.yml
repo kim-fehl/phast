@@ -71,16 +71,6 @@ jobs:
           set -o pipefail
           perl testPhast.pl --no-quit --script test_phast.sh ../bin ../baseline/bin | tee harness.log
           status=${PIPESTATUS[0]}
-          if ls temp.*.diff >/dev/null 2>&1; then
-            echo '::group::Harness diffs'
-            shopt -s nullglob
-            for diff in temp.*.diff; do
-              echo "==> $diff <=="
-              sed 's/^/    /' "$diff"
-            done
-            shopt -u nullglob
-            echo '::endgroup::'
-          fi
           if grep -Eiq 'failed [1-9][0-9]* tests' harness.log; then
             status=1
           fi
