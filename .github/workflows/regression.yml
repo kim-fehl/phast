@@ -1,0 +1,92 @@
+name: PHAST regression tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  regression:
+    name: Build and compare command outputs
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      CLAPACK_DIR: ${{ github.workspace }}/CLAPACK-3.2.1
+      PHAST_HOME: ${{ github.workspace }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential gfortran perl curl
+
+      - name: Build CLAPACK 3.2.1
+        run: |
+          curl -sSLO https://www.netlib.org/clapack/clapack.tgz
+          tar -xzf clapack.tgz
+          pushd CLAPACK-3.2.1
+          cp make.inc.example make.inc
+          make -j"$(nproc)" f2clib
+          make -j"$(nproc)" blaslib
+          make -j"$(nproc)" lib
+          popd
+
+      - name: Prepare baseline worktree
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE_BRANCH="${{ github.event.pull_request.base.ref }}"
+            git fetch origin "$BASE_BRANCH" --depth=1
+            BASE_REF="origin/$BASE_BRANCH"
+          else
+            if git rev-parse HEAD^ >/dev/null 2>&1; then
+              BASE_REF="$(git rev-parse HEAD^)"
+            else
+              BASE_REF="$(git rev-parse HEAD)"
+            fi
+          fi
+          git worktree add ../baseline "$BASE_REF"
+          echo "BASELINE_DIR=$(realpath ../baseline)" >>"$GITHUB_ENV"
+
+      - name: Build current revision
+        run: |
+          cd src
+          make CLAPACKPATH="$CLAPACK_DIR"
+
+      - name: Build baseline revision
+        run: |
+          cd "$BASELINE_DIR/src"
+          make CLAPACKPATH="$CLAPACK_DIR"
+
+      - name: Run regression harness
+        run: |
+          cd test
+          current_bin="$(realpath ../bin)"
+          baseline_bin="$BASELINE_DIR/bin"
+          export PATH="$current_bin:$baseline_bin:$PATH"
+          set -o pipefail
+          perl testPhast.pl --no-quit --script test_phast.sh "$current_bin" "$baseline_bin" | tee harness.log
+          status=${PIPESTATUS[0]}
+          if grep -Eiq 'failed [1-9][0-9]* tests' harness.log; then
+            status=1
+          fi
+          exit $status
+
+      - name: Upload harness artefacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phast-harness-outputs
+          path: |
+            test/temp_*
+            test/*.diff
+            test/*.log
+            test/*.out
+          if-no-files-found: ignore
