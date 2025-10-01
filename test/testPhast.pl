@@ -229,6 +229,63 @@ sub compare_mods {
     return $maxdif;
 }
 
+sub status_info {
+    my ($raw) = @_;
+    my %info = (
+        raw => $raw,
+        failed_exec => ($raw == -1) ? 1 : 0,
+        exit_code => undef,
+        signal => undef,
+        core => 0,
+    );
+    return \%info if ($info{failed_exec});
+
+    $info{exit_code} = ($raw >> 8) & 0xff;
+    $info{signal} = $raw & 0x7f;
+    $info{core} = ($raw & 0x80) ? 1 : 0;
+
+    return \%info;
+}
+
+sub describe_status {
+    my ($info) = @_;
+    return "ok" if (!$info->{failed_exec} && $info->{raw} == 0);
+    return "failed to execute" if ($info->{failed_exec});
+
+    my @parts;
+    my %signals = (
+        1  => 'HUP',
+        2  => 'INT',
+        3  => 'QUIT',
+        4  => 'ILL',
+        5  => 'TRAP',
+        6  => 'ABRT',
+        7  => 'BUS',
+        8  => 'FPE',
+        9  => 'KILL',
+        10 => 'USR1',
+        11 => 'SEGV',
+        12 => 'USR2',
+        13 => 'PIPE',
+        14 => 'ALRM',
+        15 => 'TERM'
+    );
+
+    if (defined $info->{exit_code} && ($info->{signal} == 0 || $info->{exit_code} != 0)) {
+        push(@parts, "exit code $info->{exit_code}");
+        push(@parts, "command not found") if ($info->{signal} == 0 && $info->{exit_code} == 127);
+    }
+
+    if ($info->{signal}) {
+        my $sigLabel = $signals{$info->{signal}};
+        my $sigStr = defined $sigLabel ? "signal $info->{signal} ($sigLabel)" : "signal $info->{signal}";
+        push(@parts, $sigStr);
+        push(@parts, "core dumped") if ($info->{core});
+    }
+
+    return join(', ', @parts) || "unknown status";
+}
+
 sub compare_files {
     my $file1=$_[0];
     my $file2=$_[1];
@@ -355,65 +412,129 @@ while (<INFILE>) {
     }
     die if (!$cmd);
     if ($cmd =~ /^@/) {
-	next if (!$doTest);
-	my ($timeStr1, $timeStr2);
-	$errorFlag=0;
-	$cmd = substr($cmd, 1);
-	print "$scriptName:" if (scalar(@ARGV) > 3);
-	print "$line: $cmd\n";
-	system("$bin1/$cmd 1>$tempPrefix.1.stdout 2>$tempPrefix.1.stderr");
-	if ($timeFile) {
-	    $timeStr1=`cat $tempTimeFile`;
-	    chomp($timeStr1);
-	}
-	print `grep -iE "error|abort|fail|assertion" $tempPrefix.1.stderr`;
-	foreach $file (@compareFiles) {
-	    system("rm -f $tempPrefix.1.$file");
-	    system("mv $file $tempPrefix.1.$file") if (-e $file);
-	}
-	if ($bin2) {
-	    system("$bin2/$cmd >$tempPrefix.2.stdout 2>$tempPrefix.2.stderr");
-            print `grep -iE "error|abort|fail|assertion" $tempPrefix.1.stderr`;
-	    foreach $file (@compareFiles) {
-		system("rm -f $tempPrefix.2.$file");
-		system("mv $file $tempPrefix.2.$file") if (-e $file);
-	    }
-	    
-	    if ($timeFile) {
-		$timeStr2=`cat $tempTimeFile`;
-		chomp($timeStr2);
-	    }
-	}
+        next if (!$doTest);
+        my ($timeStr1, $timeStr2);
+        $errorFlag=0;
+        $cmd = substr($cmd, 1);
+        print "$scriptName:" if (scalar(@ARGV) > 3);
+        print "$line: $cmd\n";
 
-	if ($timeFile) {
-	    open(TIMEFILE, ">>$timeFile");
-	    print TIMEFILE "$timeStr1";
-	    print TIMEFILE "\t$timeStr2" if ($bin2);
-	    print TIMEFILE "\t$line\t$cmd\n";
-	    close(TIMEFILE);
-	}
-	if ($bin2) {
-	    compare_files("$tempPrefix.1.stdout", "$tempPrefix.2.stdout", "stdout") 
-		if ($compareStdout);
-	    compare_files("$tempPrefix.1.stderr", "$tempPrefix.2.stderr", "stderr") 
-		if ($compareStderr);
-	    foreach $file (@compareFiles) {
-		compare_files("$tempPrefix.1.$file", "$tempPrefix.2.$file", "$file");
-	    }
-	    if ($errorFlag) {
-		$numerror++;
-		exit(1) if (!$noQuitOnError);
-	    }
-	    else {
-		$numgood++;
-	    }
-	} else {
-	    $numgood++;
-	}
+        my $status1 = system("$bin1/$cmd 1>$tempPrefix.1.stdout 2>$tempPrefix.1.stderr");
+        my $errno1 = $!;
+        my $statusInfo1 = status_info($status1);
+        if ($timeFile) {
+            $timeStr1=`cat $tempTimeFile`;
+            chomp($timeStr1);
+        }
+        print `grep -iE "error|abort|fail|assertion" $tempPrefix.1.stderr`;
+        foreach $file (@compareFiles) {
+            system("rm -f $tempPrefix.1.$file");
+            system("mv $file $tempPrefix.1.$file") if (-e $file);
+        }
+
+        my $status2;
+        my $errno2 = 0;
+        my $statusInfo2;
+        if ($bin2) {
+            $status2 = system("$bin2/$cmd >$tempPrefix.2.stdout 2>$tempPrefix.2.stderr");
+            $errno2 = $!;
+            $statusInfo2 = status_info($status2);
+            print `grep -iE "error|abort|fail|assertion" $tempPrefix.2.stderr`;
+            foreach $file (@compareFiles) {
+                system("rm -f $tempPrefix.2.$file");
+                system("mv $file $tempPrefix.2.$file") if (-e $file);
+            }
+
+            if ($timeFile) {
+                $timeStr2=`cat $tempTimeFile`;
+                chomp($timeStr2);
+            }
+        }
+
+        if ($timeFile) {
+            open(TIMEFILE, ">>$timeFile");
+            print TIMEFILE "$timeStr1";
+            print TIMEFILE "\t$timeStr2" if ($bin2);
+            print TIMEFILE "\t$line\t$cmd\n";
+            close(TIMEFILE);
+        }
+
+        if ($status1 != 0) {
+            my $desc1 = describe_status($statusInfo1);
+            if ($statusInfo1->{failed_exec}) {
+                print "  [bin1] status: $desc1";
+                print " ($errno1)" if ($errno1);
+                print "\n";
+            } else {
+                print "  [bin1] status: $desc1\n";
+            }
+        }
+        if ($bin2 && defined $status2 && $status2 != 0) {
+            my $desc2 = describe_status($statusInfo2);
+            if ($statusInfo2->{failed_exec}) {
+                print "  [bin2] status: $desc2";
+                print " ($errno2)" if ($errno2);
+                print "\n";
+            } else {
+                print "  [bin2] status: $desc2\n";
+            }
+        }
+
+        if ($bin2) {
+            if ($statusInfo1->{failed_exec} || $statusInfo2->{failed_exec}) {
+                $errorFlag=1;
+                my @failedBins;
+                push(@failedBins, "bin1") if ($statusInfo1->{failed_exec});
+                push(@failedBins, "bin2") if ($statusInfo2->{failed_exec});
+                print "  command failed to execute in " . join(' and ', @failedBins) . "\n";
+            } elsif ($statusInfo1->{signal} || $statusInfo2->{signal}) {
+                $errorFlag=1;
+                my $desc1 = describe_status($statusInfo1);
+                my $desc2 = describe_status($statusInfo2);
+                print "  command terminated by signal";
+                print " (bin1: $desc1)" if ($statusInfo1->{signal});
+                print " (bin2: $desc2)" if ($statusInfo2->{signal});
+                print "\n";
+            } elsif ($statusInfo1->{exit_code} != $statusInfo2->{exit_code}) {
+                $errorFlag=1;
+                my $desc1 = describe_status($statusInfo1);
+                my $desc2 = describe_status($statusInfo2);
+                print "  exit status mismatch: bin1=$desc1, bin2=$desc2\n";
+            }
+
+            compare_files("$tempPrefix.1.stdout", "$tempPrefix.2.stdout", "stdout")
+                if ($compareStdout);
+            compare_files("$tempPrefix.1.stderr", "$tempPrefix.2.stderr", "stderr")
+                if ($compareStderr);
+            foreach $file (@compareFiles) {
+                compare_files("$tempPrefix.1.$file", "$tempPrefix.2.$file", "$file");
+            }
+            if ($errorFlag) {
+                $numerror++;
+                exit(1) if (!$noQuitOnError);
+            }
+            else {
+                $numgood++;
+            }
+        } else {
+            if ($status1 != 0) {
+                $numerror++;
+                exit(1) if (!$noQuitOnError);
+            } else {
+                $numgood++;
+            }
+        }
     } else {
-	die "can't compare files unless command preceded by @ at $cmd"
-	    if (@compareFiles);
-	system($cmd);
+        die "can't compare files unless command preceded by @ at $cmd"
+            if (@compareFiles);
+        my $setupStatus = system($cmd);
+        my $setupInfo = status_info($setupStatus);
+        if ($setupStatus != 0) {
+            my $statusDesc = describe_status($setupInfo);
+            print STDERR "ERROR: setup command failed at line $line: $cmd ($statusDesc)\n";
+            $numerror++;
+            exit(1) if (!$noQuitOnError);
+        }
     }
 }
 close(INFILE);
